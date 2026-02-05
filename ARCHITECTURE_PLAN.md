@@ -142,7 +142,7 @@ query-llm-ai/
       ai_sse.ts
       ai_stream.ts
       health.ts
-    core/
+    query_handler/
       query_agent.ts
       orchestrator.ts
       stream_events.ts

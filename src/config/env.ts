@@ -6,8 +6,14 @@ dotenv.config();
 const env_schema = z.object({
   PORT: z.string().default('4000').transform(Number),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
+  MONGODB_URI: z.string().optional(),
   CORS_ORIGIN: z.string().default('*'),
+  BACKEND_API_URL: z.string().min(1, 'BACKEND_API_URL is required'),
+  DEFAULT_MODEL: z.string().min(1, 'DEFAULT_MODEL is required'),
+  OPENAI_API_KEY: z.string().optional(),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  GOOGLE_API_KEY: z.string().optional(),
+  AI_DEBUG_STREAM: z.string().optional(),
 });
 
 const parsed_env = env_schema.safeParse(process.env);

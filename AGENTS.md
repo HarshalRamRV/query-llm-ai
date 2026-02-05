@@ -1,0 +1,1 @@
+../query-llm-backend/.cursorrules

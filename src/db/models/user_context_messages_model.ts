@@ -62,7 +62,8 @@ const ui_user_message_schema = new Schema(
     },
     content: {
       type: String,
-      required: true,
+      required: false,  // Allow empty content
+      default: '',
     },
     created_at: {
       type: Date,
@@ -86,7 +87,8 @@ const ui_assistant_message_schema = new Schema(
     },
     content: {
       type: String,
-      required: true,
+      required: false,  // Allow empty content for tool-only messages
+      default: '',
     },
     parts: {
       type: [ui_text_part_schema, ui_tool_invocation_part_schema],
