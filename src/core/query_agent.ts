@@ -51,18 +51,6 @@ export type query_agent_result = {
 
 const create_message_id = (): string => `msg_${randomUUID()}`;
 
-const push_text_part = (
-  parts: Array<{ type: 'text'; text: string } | { type: 'tool-call'; toolCallId: string; toolName: string; args: unknown }>,
-  delta: string
-) => {
-  const last = parts[parts.length - 1];
-  if (last && last.type === 'text') {
-    last.text += delta;
-  } else {
-    parts.push({ type: 'text', text: delta });
-  }
-};
-
 export class QueryAgent {
   async run(
     request: query_agent_request,
@@ -113,11 +101,14 @@ export class QueryAgent {
     }));
 
     const ui_parts: ui_message['parts'] = [];
-    const assistant_parts: Array<
-      { type: 'text'; text: string } | { type: 'tool-call'; toolCallId: string; toolName: string; args: unknown }
-    > = [];
-    const tool_results: Array<{ toolCallId: string; toolName: string; result: unknown }> = [];
-    let assistant_text = '';
+
+    // Track separate message steps for proper agent context structure
+    const step_messages: agent_message[] = [];
+    let current_step_tool_calls: Array<{ type: 'tool-call'; toolCallId: string; toolName: string; args: unknown }> = [];
+    let current_step_text = '';
+    let has_seen_tool_result = false;
+    let ui_assistant_text = '';
+
     let finish_reason: string | undefined;
     let usage:
       | {
@@ -133,6 +124,7 @@ export class QueryAgent {
         model: model as any,
         messages: model_messages as any,
         tools: tool_registry as any,
+        maxSteps: 5, // Allow multiple tool call steps - model can call tools and continue generating responses
         abortSignal: abort_signal,
       } as any);
 
@@ -144,17 +136,30 @@ export class QueryAgent {
         for await (const part of full_stream as AsyncIterable<any>) {
           partCount++;
           console.log(`[QueryAgent] Stream part ${partCount}:`, part.type, part);
+
           if (part.type === 'text-delta') {
             const delta = part.textDelta ?? '';
-            assistant_text += delta;
-            push_text_part(assistant_parts, delta);
+            current_step_text += delta;
+            ui_assistant_text += delta;
             emit({ type: 'text', messageId: assistant_message_id, delta });
           } else if (part.type === 'tool-call') {
+            // If we have text before tool calls, save it as an assistant message
+            if (current_step_text.trim()) {
+              step_messages.push({
+                id: create_message_id(),
+                role: 'assistant',
+                content: current_step_text,
+                created_at,
+              });
+              current_step_text = '';
+            }
+
+            // Add tool call to current step
             const toolCallId = part.toolCallId ?? create_message_id();
             const toolName = part.toolName ?? 'tool';
             const args = part.args ?? {};
 
-            assistant_parts.push({ type: 'tool-call', toolCallId, toolName, args });
+            current_step_tool_calls.push({ type: 'tool-call', toolCallId, toolName, args });
             ui_parts?.push({
               type: 'tool-invocation',
               toolCallId,
@@ -174,7 +179,34 @@ export class QueryAgent {
             const toolName = part.toolName ?? 'tool';
             const result_data = part.result;
 
-            tool_results.push({ toolCallId, toolName, result: result_data });
+            // When we see the first tool-result, save the assistant message with tool calls
+            if (!has_seen_tool_result && current_step_tool_calls.length > 0) {
+              step_messages.push({
+                id: create_message_id(),
+                role: 'assistant',
+                content: current_step_tool_calls,
+                created_at,
+              });
+              current_step_tool_calls = [];
+              has_seen_tool_result = true;
+            }
+
+            // Save tool result as a separate tool message
+            step_messages.push({
+              id: create_message_id(),
+              role: 'tool',
+              content: [
+                {
+                  type: 'tool-result',
+                  toolCallId,
+                  toolName,
+                  result: result_data,
+                },
+              ],
+              created_at,
+            });
+
+            // Update UI parts
             if (ui_parts) {
               const index = ui_parts.findIndex(
                 (item) => item.type === 'tool-invocation' && item.toolCallId === toolCallId
@@ -195,7 +227,7 @@ export class QueryAgent {
                 });
               }
             }
-            emit({ type: 'tool-result', toolCallId, toolName, result: result_data });
+            // Note: Not emitting tool-result to frontend - only tool-invocation (UI) is sent
           } else if (part.type === 'finish') {
             finish_reason = part.finishReason;
             if (part.usage) {
@@ -208,22 +240,51 @@ export class QueryAgent {
             }
           }
         }
-        console.log('[QueryAgent] Stream ended. Total parts:', partCount, 'Text length:', assistant_text.length);
+
+        // Save any remaining text as final assistant message
+        if (current_step_text.trim()) {
+          step_messages.push({
+            id: create_message_id(),
+            role: 'assistant',
+            content: current_step_text,
+            created_at,
+          });
+        }
+
+        // If we still have unsaved tool calls (no results received), save them
+        if (current_step_tool_calls.length > 0) {
+          step_messages.push({
+            id: create_message_id(),
+            role: 'assistant',
+            content: current_step_tool_calls,
+            created_at,
+          });
+        }
+
+        console.log('[QueryAgent] Stream ended. Total parts:', partCount, 'Steps:', step_messages.length);
       } else if ((result as any).textStream) {
         console.log('[QueryAgent] Using textStream fallback');
         let deltaCount = 0;
         for await (const delta of (result as any).textStream as AsyncIterable<string>) {
           deltaCount++;
-          assistant_text += delta;
-          push_text_part(assistant_parts, delta);
+          current_step_text += delta;
+          ui_assistant_text += delta;
           emit({ type: 'text', messageId: assistant_message_id, delta });
+        }
+        if (current_step_text.trim()) {
+          step_messages.push({
+            id: create_message_id(),
+            role: 'assistant',
+            content: current_step_text,
+            created_at,
+          });
         }
         console.log('[QueryAgent] TextStream ended. Total deltas:', deltaCount);
       } else {
         console.warn('[QueryAgent] No stream available from result:', Object.keys(result));
       }
 
-      console.log('[QueryAgent] Final assistant text length:', assistant_text.length);
+      console.log('[QueryAgent] Final UI text length:', ui_assistant_text.length, 'Step messages:', step_messages.length);
       emit({
         type: 'chat-complete',
         messageId: assistant_message_id,
@@ -250,6 +311,23 @@ export class QueryAgent {
       }
     }
 
+    // UI messages: simplified view for frontend display
+    // Build parts array with tool invocations FIRST, then text
+    const ui_message_parts: ui_message['parts'] = [];
+
+    // Add all tool invocations first (display at top)
+    if (ui_parts && ui_parts.length > 0) {
+      ui_message_parts.push(...ui_parts);
+    }
+
+    // Add text content after tool invocations (display below tools)
+    if (ui_assistant_text && ui_assistant_text.trim()) {
+      ui_message_parts.push({
+        type: 'text',
+        text: ui_assistant_text,
+      });
+    }
+
     const ui_messages: ui_message[] = [
       {
         id: user_message_id,
@@ -260,36 +338,24 @@ export class QueryAgent {
       {
         id: assistant_message_id,
         role: 'assistant',
-        content: assistant_text || '',
-        parts: ui_parts && ui_parts.length > 0 ? ui_parts : undefined,
+        content: ui_assistant_text || '', // Keep for backward compatibility
+        parts: ui_message_parts.length > 0 ? ui_message_parts : undefined,
         created_at,
       },
     ];
 
-    const assistant_message: agent_message = {
-      id: assistant_message_id,
-      role: 'assistant',
-      content: assistant_parts.length > 0 ? assistant_parts : assistant_text,
+    // Agent messages: proper multi-turn structure for context
+    // Structure: [user_msg, assistant_msg_with_tool_calls, tool_result_msg, assistant_msg_with_text, ...]
+    const user_agent_message: agent_message = {
+      id: user_message_id,
+      role: 'user',
+      content: request.message,
       created_at,
     };
 
-    const tool_messages: agent_message[] = tool_results.map((tool_result) => ({
-      id: create_message_id(),
-      role: 'tool',
-      content: [
-        {
-          type: 'tool-result',
-          toolCallId: tool_result.toolCallId,
-          toolName: tool_result.toolName,
-          result: tool_result.result,
-        },
-      ],
-      created_at,
-    }));
-
     return {
       ui_messages,
-      agent_messages: [agent_messages[agent_messages.length - 1], assistant_message, ...tool_messages],
+      agent_messages: [user_agent_message, ...step_messages],
       finish_reason,
       usage,
     };

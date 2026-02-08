@@ -134,16 +134,6 @@ router.post('/sse', async (req: Request, res: Response) => {
             },
             'AI tool invocation'
           );
-        } else if (event.type === 'tool-result') {
-          logger.info(
-            {
-              conversation_id: body.conversation_id,
-              tool_call_id: event.toolCallId,
-              tool_name: event.toolName,
-              result: safe_stringify(event.result, 2000),
-            },
-            'AI tool result'
-          );
         } else {
           logger.info(
             {
