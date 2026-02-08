@@ -12,7 +12,7 @@ const env_schema = z.object({
   DEFAULT_MODEL: z.string().min(1, 'DEFAULT_MODEL is required'),
   OPENAI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
-  GOOGLE_API_KEY: z.string().optional(),
+  GEMINI_API_KEY: z.string().optional(),
   AI_DEBUG_STREAM: z.string().optional(),
 });
 

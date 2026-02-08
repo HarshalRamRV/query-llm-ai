@@ -24,12 +24,7 @@ export type stream_event =
       args?: unknown;
       result?: unknown;
     }
-  | {
-      type: 'tool-result';
-      toolCallId: string;
-      toolName: string;
-      result: unknown;
-    }
+  // Note: tool-result events removed - tool results are stored internally but only tool-invocation (UI) is streamed
   | {
       type: 'usage';
       promptTokens: number;
