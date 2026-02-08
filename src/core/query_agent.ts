@@ -73,7 +73,8 @@ export class QueryAgent {
     const assistant_message_id = request.assistant_message_id ?? create_message_id();
     const created_at = new Date();
 
-    const { model } = resolve_model(request.model, env.DEFAULT_MODEL);
+    const { provider, model_name, model } = resolve_model(request.model, env.DEFAULT_MODEL);
+    console.log('[QueryAgent] Resolved model:', { provider, model_name, requested: request.model });
 
     emit({
       type: 'chat-start',
@@ -127,6 +128,7 @@ export class QueryAgent {
       | undefined;
 
     try {
+      console.log('[QueryAgent] Starting streamText with model:', model_name);
       const result = await streamText({
         model: model as any,
         messages: model_messages as any,
@@ -135,9 +137,13 @@ export class QueryAgent {
       } as any);
 
       const full_stream = (result as any).fullStream || (result as any).stream;
+      console.log('[QueryAgent] Stream type:', full_stream ? 'fullStream' : 'textStream or none');
 
       if (full_stream) {
+        let partCount = 0;
         for await (const part of full_stream as AsyncIterable<any>) {
+          partCount++;
+          console.log(`[QueryAgent] Stream part ${partCount}:`, part.type, part);
           if (part.type === 'text-delta') {
             const delta = part.textDelta ?? '';
             assistant_text += delta;
@@ -202,24 +208,39 @@ export class QueryAgent {
             }
           }
         }
+        console.log('[QueryAgent] Stream ended. Total parts:', partCount, 'Text length:', assistant_text.length);
       } else if ((result as any).textStream) {
+        console.log('[QueryAgent] Using textStream fallback');
+        let deltaCount = 0;
         for await (const delta of (result as any).textStream as AsyncIterable<string>) {
+          deltaCount++;
           assistant_text += delta;
           push_text_part(assistant_parts, delta);
           emit({ type: 'text', messageId: assistant_message_id, delta });
         }
+        console.log('[QueryAgent] TextStream ended. Total deltas:', deltaCount);
+      } else {
+        console.warn('[QueryAgent] No stream available from result:', Object.keys(result));
       }
 
+      console.log('[QueryAgent] Final assistant text length:', assistant_text.length);
       emit({
         type: 'chat-complete',
         messageId: assistant_message_id,
         finishReason: finish_reason,
       });
     } catch (error) {
+      console.error('[QueryAgent] Stream error:', error);
       if (abort_signal?.aborted) {
+        console.log('[QueryAgent] Stream aborted by client');
         emit({ type: 'cancel', reason: 'client_aborted' });
         finish_reason = 'cancelled';
       } else {
+        console.error('[QueryAgent] Stream error details:', {
+          message: error instanceof Error ? error.message : 'Unknown error',
+          stack: error instanceof Error ? error.stack : undefined,
+          error
+        });
         emit({
           type: 'error',
           code: 'STREAM_ERROR',
